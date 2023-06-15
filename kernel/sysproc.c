@@ -6,6 +6,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -94,4 +95,37 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  struct proc *p = myproc();
+  argint(0, &p->mask);
+
+  return 0;
+}
+
+uint64
+sys_sysinfo(void) {
+  uint64 addr; // 用户内存地址
+  struct sysinfo sy;  // 内核信息结构体
+
+  // 尝试从寄存器中读取用户参数地址addr
+  if (argaddr(0, &addr) < 0)
+    return -1;
+  
+  // 统计当前可用内存（字节）
+  sy.freemem = countFreeMem();
+
+  // 统计当前进程数
+  sy.nproc = countProc();
+
+  // 将内核结构体复制到用户空间
+  // 获取当前进程proc
+  struct proc *p = myproc();
+  if (copyout(p->pagetable, addr, (char *)&sy, sizeof(sy)) < 0)
+    return -1;
+  
+  return 0;
 }

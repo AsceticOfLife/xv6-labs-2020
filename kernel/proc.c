@@ -291,6 +291,9 @@ fork(void)
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
+  // copy trace mask
+  np->mask = p->mask;
+
   pid = np->pid;
 
   np->state = RUNNABLE;
@@ -692,4 +695,36 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+// count the amount of processes
+// uint64
+// countProc(void) {
+//   int current;
+
+//   acquire(&pid_lock);
+//   current = nextpid;
+//   release(&pid_lock);
+
+//   return NPROC - current + 1;
+// }
+
+// count the amount of processes
+uint64
+countProc(void) {
+  int current_num = 0;
+
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+
+    if(p->state != UNUSED) {
+      current_num++;
+    }
+
+    release(&p->lock);
+  }
+
+  return current_num;
 }
