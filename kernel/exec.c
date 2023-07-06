@@ -107,7 +107,14 @@ exec(char *path, char **argv)
     if(*s == '/')
       last = s+1;
   safestrcpy(p->name, last, sizeof(p->name));
-    
+  
+  // clear old user mappings before copy
+  uvmunmap(p->kernel_pagetable, 0, PGROUNDUP(oldsz) / PGSIZE, 0);
+  if (kernelpagetable_uvmcopy(pagetable, p->kernel_pagetable, 0, sz) < 0) {
+      // 内核页表已经被清除了, 此时复制新的用户映射出错了, 只能panic
+      panic("exec: kernelpagetable_uvmcopy");
+  }
+
   // Commit to the user image.
   oldpagetable = p->pagetable;
   p->pagetable = pagetable;
@@ -116,6 +123,7 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+  if (p->pid == 1) vmprint(p->pagetable);
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:

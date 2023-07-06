@@ -34,14 +34,14 @@ procinit(void)
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
+      // char *pa = kalloc();
+      // if(pa == 0)
+      //   panic("kalloc");
+      // uint64 va = KSTACK((int) (p - proc));
+      // kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      // p->kstack = va;
   }
-  kvminithart();
+  // kvminithart();
 }
 
 // Must be called with interrupts disabled,
@@ -121,6 +121,16 @@ found:
     return 0;
   }
 
+  // allocate and initialize the processes' kernel pagetable
+  p->kernel_pagetable = proc_kvminit();
+  char *pa = kalloc();
+  if (pa == 0) 
+    panic("allocproc: kalloc");
+  uint64 va = KSTACK((int)(p - proc));
+  uvmmap(p->kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+  
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -141,6 +151,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->kernel_pagetable)
+    proc_free_kernelpagetable(p->kernel_pagetable, p->kstack);
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -195,6 +208,13 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmfree(pagetable, sz);
 }
 
+void
+proc_free_kernelpagetable(pagetable_t pagetable, uint64 kstack) {
+  uvmunmap(pagetable, kstack, 1, 1); // 取消对于kstack的映射并且释放kstack的物理内存
+
+  kpgt_freewalk(pagetable);
+}
+
 // a user program that calls exec("/init")
 // od -t xC initcode
 uchar initcode[] = {
@@ -221,6 +241,10 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  // copy user pagetable to kernel pagetable
+  if (kernelpagetable_uvmcopy(p->pagetable, p->kernel_pagetable, 0, PGSIZE) < 0)
+    panic("userinit: kernelpagetable_uvmcopy");
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -239,15 +263,31 @@ int
 growproc(int n)
 {
   uint sz;
+  uint beg, end;
   struct proc *p = myproc();
 
   sz = p->sz;
   if(n > 0){
+    if (sz + n > PLIC)
+      // panic("growproc: process's memory should less than PLIC");
+      return -1;
+
+    beg = sz;
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    end = sz;
+    // copy kerenl pagetable from user pagateable
+    if (kernelpagetable_uvmcopy(p->pagetable, p->kernel_pagetable, PGROUNDUP(beg), end) < 0) 
+      return -1;
   } else if(n < 0){
+    beg = sz;
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    end = sz;
+    if (end < beg && PGROUNDUP(end) < PGROUNDUP(beg)) {
+      int npages = (PGROUNDUP(beg) - PGROUNDUP(end)) / PGSIZE;
+      uvmunmap(p->kernel_pagetable, PGROUNDUP(end), npages, 0);
+    }
   }
   p->sz = sz;
   return 0;
@@ -274,6 +314,14 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // copy kernel pagatebale from parent's pagetable
+  if (kernelpagetable_uvmcopy(np->pagetable, np->kernel_pagetable, 0, np->sz) < 0) {
+    freeproc(np);
+    release(&np->lock);
+    return -1;
+  }
+
 
   np->parent = p;
 
@@ -473,10 +521,16 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // load processes's kernel pagetable to satp register
+        w_satp(MAKE_SATP(p->kernel_pagetable));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        kvminithart();
         c->proc = 0;
 
         found = 1;
