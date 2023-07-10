@@ -132,3 +132,20 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+// print backtrace of current function call
+void 
+backtrace(void) {
+  // Print "backtrace"
+  printf("%s\n", "backtrace:");
+
+  // get current fp
+  uint64 fp = r_fp();
+  uint64 page_top = PGROUNDUP(fp);
+
+  while (fp < page_top) {
+    printf("%p\n", *((uint64 *)(fp - 8)));
+    fp = *((uint64 *)(fp - 16));
+  }
+
+}

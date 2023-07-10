@@ -80,6 +80,22 @@ usertrap(void)
   if(which_dev == 2)
     yield();
 
+  if (which_dev == 2) {
+    p->nticks++;
+
+    if (p->nticks == p->alarm_interval) {
+      p->nticks = 0;
+      if (p->flag == 1) {
+        // printf("usertrap(): should call handler.\n");
+        // 将handler函数地址保存为返回之后下一条应该执行的执行地址
+        memmove(p->alarm_trapframe, p->trapframe, sizeof(struct trapframe));
+        p->trapframe->epc = (uint64)(p->handler);
+        p->flag = 0;
+      }
+  
+    } // end of if nticks
+  } // end of if which_dev
+
   usertrapret();
 }
 
