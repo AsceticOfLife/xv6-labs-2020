@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+extern int refNum[];
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -28,6 +30,43 @@ trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
 }
+
+int cowhandler(pagetable_t pagetable, uint64 va) {
+  // get the va(must aligned to PGSIZE)
+  va = PGROUNDDOWN(va);
+  
+  // get pte
+  pte_t *pte = walk(pagetable, va, 0);
+  if (pte == 0) return -1; // not existed
+  if ((*pte & PTE_COW) == 0) return -1; // not cow
+  if ((*pte & PTE_V) == 0) return -1; // invalid
+  
+  // translate to physical address
+  uint64 pa = PTE2PA(*pte);
+  if (refNum[(pa - KERNBASE) / PGSIZE] == 1) {
+    // only belongs to parent or child process
+    (*pte) |= (PTE_W);
+    (*pte) &= (~PTE_COW);
+
+    return 0;
+  }
+
+  // allocate a new physical page
+  char *mem;
+  if ((mem = kalloc()) == 0) return -1;
+
+  // copy memory to new from old
+  memmove(mem, (void *)pa, PGSIZE);
+  // decrease reference of old pa
+  kfree((void *)pa);
+
+  // get and modify flags
+  uint64 flags = (PTE_FLAGS(*pte) | (PTE_W)) & (~PTE_COW);
+  *pte = PA2PTE((uint64)mem) | flags;
+
+  return 0;
+}
+
 
 //
 // handle an interrupt, exception, or system call from user space.
@@ -67,6 +106,13 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 15 || r_scause() == 13) {
+    // page fault handler
+    uint64 va = r_stval();
+    
+    if (cowhandler(p->pagetable, va) < 0)
+      p->killed = 1;
+
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
