@@ -8,15 +8,26 @@
 #define NBUCKET 5
 #define NKEYS 100000
 
+// hash表中的结点
 struct entry {
   int key;
   int value;
   struct entry *next;
 };
-struct entry *table[NBUCKET];
+struct entry *table[NBUCKET]; // hash table
 int keys[NKEYS];
-int nthread = 1;
+int nthread = 1;  // 线程数
 
+// lock
+pthread_mutex_t lock[NBUCKET];
+
+// 初始化锁
+void InitLocks(void) {
+  for (int i = 0; i < NBUCKET; ++i) 
+    pthread_mutex_init(&lock[i], NULL);
+}
+
+// 当前时间
 double
 now()
 {
@@ -25,6 +36,7 @@ now()
  return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
+// 向hash表p中的结点n前插入新的结点
 static void 
 insert(int key, int value, struct entry **p, struct entry *n)
 {
@@ -35,6 +47,7 @@ insert(int key, int value, struct entry **p, struct entry *n)
   *p = e;
 }
 
+// 向hash桶中插入元素
 static 
 void put(int key, int value)
 {
@@ -46,6 +59,9 @@ void put(int key, int value)
     if (e->key == key)
       break;
   }
+
+  // 上锁
+  pthread_mutex_lock(&lock[i]);
   if(e){
     // update the existing key.
     e->value = value;
@@ -53,8 +69,12 @@ void put(int key, int value)
     // the new is new.
     insert(key, value, &table[i], table[i]);
   }
+  // 解锁
+  pthread_mutex_unlock(&lock[i]);
 }
 
+// 从hash桶中找到key对应的结点
+// 没找到返回空节点
 static struct entry*
 get(int key)
 {
@@ -72,8 +92,9 @@ get(int key)
 static void *
 put_thread(void *xa)
 {
+  // 线程的序数，范围是[0, nthread)
   int n = (int) (long) xa; // thread number
-  int b = NKEYS/nthread;
+  int b = NKEYS/nthread;  // 每个线程处理的操作个数
 
   for (int i = 0; i < b; i++) {
     put(keys[b*n + i], n);
@@ -107,18 +128,24 @@ main(int argc, char *argv[])
     fprintf(stderr, "Usage: %s nthreads\n", argv[0]);
     exit(-1);
   }
-  nthread = atoi(argv[1]);
-  tha = malloc(sizeof(pthread_t) * nthread);
+  nthread = atoi(argv[1]);  // 线程个数
+  tha = malloc(sizeof(pthread_t) * nthread);  // 线程指针数组
   srandom(0);
   assert(NKEYS % nthread == 0);
+
+  // 初始化keys数组为随机值
   for (int i = 0; i < NKEYS; i++) {
     keys[i] = random();
   }
+
+  // 初始化所有的锁
+  InitLocks();
 
   //
   // first the puts
   //
   t0 = now();
+  // 对于每一个线程执行一次put函数
   for(int i = 0; i < nthread; i++) {
     assert(pthread_create(&tha[i], NULL, put_thread, (void *) (long) i) == 0);
   }
@@ -134,6 +161,7 @@ main(int argc, char *argv[])
   // now the gets
   //
   t0 = now();
+  
   for(int i = 0; i < nthread; i++) {
     assert(pthread_create(&tha[i], NULL, get_thread, (void *) (long) i) == 0);
   }
