@@ -69,14 +69,16 @@ balloc(uint dev)
 
   bp = 0;
   for(b = 0; b < sb.size; b += BPB){
-    bp = bread(dev, BBLOCK(b, sb));
+    bp = bread(dev, BBLOCK(b, sb)); // 获取一个bitmap块
     for(bi = 0; bi < BPB && b + bi < sb.size; bi++){
-      m = 1 << (bi % 8);
+      m = 1 << (bi % 8);  // bitmap块的每一位表示一个块是否空闲，一共可以表示BPB个块
       if((bp->data[bi/8] & m) == 0){  // Is block free?
         bp->data[bi/8] |= m;  // Mark block in use.
         log_write(bp);
         brelse(bp);
         bzero(dev, b + bi);
+        // b + bi 表示块号
+        // 其中b可以看作是第几个bitmap，bi看作是bitmap中的第几位，也表示第几个块是否空闲
         return b + bi;
       }
     }
@@ -380,25 +382,54 @@ bmap(struct inode *ip, uint bn)
   uint addr, *a;
   struct buf *bp;
 
+  // 如果bn是直接块的内容
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
       ip->addrs[bn] = addr = balloc(ip->dev);
     return addr;
   }
-  bn -= NDIRECT;
+  bn -= NDIRECT; // 减去直接块的序号，在间接块中的序号
 
+  // 处理一级引用块
   if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
+    // 如果间接块没有分配
     if((addr = ip->addrs[NDIRECT]) == 0)
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
+    bp = bread(ip->dev, addr);  // 获取buf缓冲块
+    a = (uint*)bp->data;  // buf->data: 1024个uchar元素的数组，转换成uint元素的数组，于是变为256个元素，每个元素4个uchar
     if((addr = a[bn]) == 0){
-      a[bn] = addr = balloc(ip->dev);
+      a[bn] = addr = balloc(ip->dev); // 申请一个块并且修改buf内容  
+      log_write(bp);  // 记录到日志中
+    }
+    brelse(bp); // 释放buf缓冲块
+    return addr;
+  }
+  bn -= NINDIRECT;
+
+  // 处理二级引用块
+  if (bn / NINDIRECT < NINDIRECT) {
+    if ((addr = ip->addrs[NDIRECT + 1]) == 0) 
+      ip->addrs[NDIRECT + 1] = addr = balloc(ip->dev);
+    // 获取二级buf块，buf块内容是256个指向另一个buf的下标
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn / NINDIRECT]) == 0) {
+      a[bn / NINDIRECT] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
-    return addr;
+
+    // 获取一级buf块，buf块内容是256个指向data数据块的下标
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn % NINDIRECT]) == 0) {
+      a[bn % NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+
+    return addr;    
   }
 
   panic("bmap: out of range");
@@ -411,8 +442,11 @@ itrunc(struct inode *ip)
 {
   int i, j;
   struct buf *bp;
+  struct buf *bp2;
   uint *a;
+  uint *a2;
 
+  // 释放直接块
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -420,6 +454,7 @@ itrunc(struct inode *ip)
     }
   }
 
+  // 释放一级引用块
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
@@ -431,6 +466,30 @@ itrunc(struct inode *ip)
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
+
+  // 释放二级引用块
+  if (ip->addrs[NDIRECT + 1]) {
+    // 获取二级引用
+    bp2 = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    a2 = (uint *)bp2->data;
+    for (i = 0; i < NINDIRECT; ++i) {
+      if (a2[i]) {
+        // 获取一级引用
+        bp = bread(ip->dev, a2[i]);
+        a = (uint *)bp->data;
+        for (j = 0; j < NINDIRECT; ++j) {
+          // 遍历释放data块
+          if (a[j]) bfree(ip->dev, a[j]);
+        }
+        // 释放一级引用块
+        brelse(bp);
+        bfree(ip->dev, a2[i]);
+      }
+    }
+    brelse(bp2); // 释放二级引用块
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    ip->addrs[NDIRECT + 1] = 0;
+  } 
 
   ip->size = 0;
   iupdate(ip);

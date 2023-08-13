@@ -322,6 +322,38 @@ sys_open(void)
     return -1;
   }
 
+  // 处理T_SYSLINK类型文件
+  // 如果设置了NOFLOOW标志，则不应该follow文件，只打开文件
+  // 当没有设置NOFOLLOW标志时，可以跟随link文件
+  if (ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+    int count = 0;
+    // 递归link文件
+    while (ip->type == T_SYMLINK) {
+      // 如果读取失败
+      if (readi(ip, 0, (uint64)&path, 0, MAXPATH) == -1) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+
+      iunlockput(ip);
+      // 如果找不到path文件的inode
+      if ((ip = namei(path)) == 0) {
+        end_op();
+        return -1;
+      }
+
+      count++;
+      // 递归深度超过10
+      if (10 == count) {
+        end_op();
+        return -1;
+      }
+
+      ilock(ip); //对于inode加锁
+    }
+  }
+
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
       fileclose(f);
@@ -482,5 +514,31 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64 sys_symlink(void) {
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+
+  // 从寄存器中获取参数
+  if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0) 
+    return -1;
+
+  begin_op();
+  // 创建一个新的inode
+  ip = create(path, T_SYMLINK, 0, 0);
+  if (ip == 0) {
+    end_op();
+    return -1;
+  }
+
+  // 将目标路径写入inode的data block
+  if (writei(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH) 
+    return -1;
+  
+  // inode已经使用完毕
+  iunlockput(ip);
+  end_op();
   return 0;
 }
